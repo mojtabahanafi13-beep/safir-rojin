@@ -1,5 +1,6 @@
 package ir.factoranbar.safirrojin;
 
+import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -19,6 +20,7 @@ import android.os.Bundle;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.content.pm.PackageManager;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
@@ -49,32 +51,74 @@ public class SafirLocationService extends Service implements LocationListener {
         }
     }
 
-    @SuppressLint("MissingPermission")
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && "STOP_TRACKING".equals(intent.getAction())) {
-            stopSelf();
+        String action = intent != null ? intent.getAction() : null;
+        if ("STOP_TRACKING".equals(action)) {
+            stopForeground(true);
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
+
+        SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS_NAME, MODE_PRIVATE);
+        String trackCode = prefs.getString("trackCode", "");
+        if (!prefs.getBoolean("tripActive", false) || trackCode == null || trackCode.trim().isEmpty()) {
+            stopForeground(true);
+            stopSelf(startId);
             return START_NOT_STICKY;
         }
 
         startForeground(NOTIF_ID, buildTrackingNotification());
+        if (!hasLocationPermission()) {
+            stopForeground(true);
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
+
         if (wakeLock != null && !wakeLock.isHeld()) {
-            try { wakeLock.acquire(10 * 3600 * 1000L); } catch (Exception ignored) {}
+            try {
+                // این قفل فقط تا پایان سفر فعال نگه داشته می‌شود تا زمان قفل صفحه GPS متوقف نشود.
+                wakeLock.acquire();
+            } catch (Exception ignored) {}
         }
 
         try {
             locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
-            if (locationManager != null) {
-                if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                    locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 12000L, 0f, this, Looper.getMainLooper());
-                }
-                if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                    locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 15000L, 0f, this, Looper.getMainLooper());
-                }
-            }
+            requestLocationUpdatesSafely();
         } catch (Exception ignored) {}
 
         return START_STICKY;
+    }
+
+    private boolean hasLocationPermission() {
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    @SuppressLint("MissingPermission")
+    private void requestLocationUpdatesSafely() {
+        if (locationManager == null || !hasLocationPermission()) return;
+
+        try {
+            locationManager.removeUpdates(this);
+        } catch (Exception ignored) {}
+
+        boolean fineGranted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        boolean coarseGranted = checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+        if (fineGranted) {
+            try {
+                if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                    locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 10000L, 0f, this, Looper.getMainLooper());
+                }
+            } catch (Exception ignored) {}
+        }
+        if (fineGranted || coarseGranted) {
+            try {
+                if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                    locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 15000L, 0f, this, Looper.getMainLooper());
+                }
+            } catch (Exception ignored) {}
+        }
     }
 
     @Override
@@ -165,11 +209,14 @@ public class SafirLocationService extends Service implements LocationListener {
         try {
             if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         } catch (Exception ignored) {}
+        try {
+            netExecutor.shutdownNow();
+        } catch (Exception ignored) {}
         super.onDestroy();
     }
 
     @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
-    @Override public void onProviderEnabled(@NonNull String provider) {}
+    @Override public void onProviderEnabled(@NonNull String provider) { requestLocationUpdatesSafely(); }
     @Override public void onProviderDisabled(@NonNull String provider) {}
     @Override public IBinder onBind(Intent intent) { return null; }
 }

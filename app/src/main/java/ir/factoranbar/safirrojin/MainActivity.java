@@ -3,10 +3,12 @@ package ir.factoranbar.safirrojin;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
+import android.content.ClipData;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -35,6 +37,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -48,8 +51,11 @@ public class MainActivity extends AppCompatActivity {
 
     private WebView webView;
     private ValueCallback<Uri[]> filePathCallback;
+    private Uri cameraOutputUri;
+    private File cameraOutputFile;
     private static final int FILE_CHOOSER_REQ = 1001;
     private static final int PERMISSIONS_REQ = 1002;
+    private static final int BG_LOC_PERMISSION_REQ = 1003;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -112,27 +118,54 @@ public class MainActivity extends AppCompatActivity {
             }
 
             @Override
-            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
+            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> callback, FileChooserParams fileChooserParams) {
                 if (MainActivity.this.filePathCallback != null) {
                     MainActivity.this.filePathCallback.onReceiveValue(null);
                 }
-                MainActivity.this.filePathCallback = filePathCallback;
+                MainActivity.this.filePathCallback = callback;
 
-                Intent contentSelectionIntent = new Intent(Intent.ACTION_GET_CONTENT);
-                contentSelectionIntent.addCategory(Intent.CATEGORY_OPENABLE);
-                contentSelectionIntent.setType("image/*");
-
-                Intent chooserIntent = new Intent(Intent.ACTION_CHOOSER);
-                chooserIntent.putExtra(Intent.EXTRA_INTENT, contentSelectionIntent);
-                chooserIntent.putExtra(Intent.EXTRA_TITLE, "انتخاب یا گرفتن عکس");
-
+                boolean imageRequest = acceptsImages(fileChooserParams != null ? fileChooserParams.getAcceptTypes() : null);
+                Intent pickerIntent;
                 try {
+                    pickerIntent = fileChooserParams != null
+                        ? fileChooserParams.createIntent()
+                        : new Intent(Intent.ACTION_GET_CONTENT);
+                } catch (Exception ignored) {
+                    pickerIntent = new Intent(Intent.ACTION_GET_CONTENT);
+                }
+                pickerIntent.addCategory(Intent.CATEGORY_OPENABLE);
+                if (imageRequest && (pickerIntent.getType() == null || pickerIntent.getType().isEmpty())) {
+                    pickerIntent.setType("image/*");
+                }
+
+                Intent cameraIntent = imageRequest ? createCameraCaptureIntent() : null;
+                try {
+                    if (cameraIntent != null && fileChooserParams != null && fileChooserParams.isCaptureEnabled()) {
+                        try {
+                            startActivityForResult(cameraIntent, FILE_CHOOSER_REQ);
+                            return true;
+                        } catch (Exception cameraUnavailable) {
+                            // Fall through to the picker if no camera app can handle capture.
+                        }
+                    }
+
+                    Intent chooserIntent = Intent.createChooser(
+                        pickerIntent,
+                        imageRequest ? "گرفتن عکس با دوربین یا انتخاب از گالری" : "انتخاب فایل"
+                    );
+                    if (cameraIntent != null) {
+                        chooserIntent.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{cameraIntent});
+                    }
                     startActivityForResult(chooserIntent, FILE_CHOOSER_REQ);
+                    return true;
                 } catch (Exception e) {
-                    MainActivity.this.filePathCallback = null;
+                    if (MainActivity.this.filePathCallback != null) {
+                        MainActivity.this.filePathCallback.onReceiveValue(null);
+                        MainActivity.this.filePathCallback = null;
+                    }
+                    discardPendingCameraPhoto();
                     return false;
                 }
-                return true;
             }
         });
 
@@ -182,6 +215,89 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         } catch (Exception ignored) {}
+    }
+
+    private boolean acceptsImages(String[] acceptTypes) {
+        if (acceptTypes == null || acceptTypes.length == 0) return true;
+        boolean hasType = false;
+        for (String acceptType : acceptTypes) {
+            if (acceptType == null || acceptType.trim().isEmpty()) continue;
+            hasType = true;
+            String type = acceptType.toLowerCase(java.util.Locale.ROOT);
+            if (type.contains("image/") || type.contains("*/*")) return true;
+        }
+        return !hasType;
+    }
+
+    private Intent createCameraCaptureIntent() {
+        discardPendingCameraPhoto();
+        try {
+            File picturesDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+            if (picturesDir == null || (!picturesDir.exists() && !picturesDir.mkdirs())) {
+                picturesDir = new File(getCacheDir(), "camera");
+            }
+            if (!picturesDir.exists() && !picturesDir.mkdirs()) return null;
+
+            cameraOutputFile = File.createTempFile("safir-chat-", ".jpg", picturesDir);
+            cameraOutputUri = FileProvider.getUriForFile(
+                this, getPackageName() + ".fileprovider", cameraOutputFile
+            );
+
+            Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            intent.putExtra(MediaStore.EXTRA_OUTPUT, cameraOutputUri);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            intent.setClipData(ClipData.newUri(getContentResolver(), "SafirRojinPhoto", cameraOutputUri));
+            return intent;
+        } catch (Exception e) {
+            discardPendingCameraPhoto();
+            return null;
+        }
+    }
+
+    private void discardPendingCameraPhoto() {
+        try {
+            if (cameraOutputFile != null && cameraOutputFile.exists() && cameraOutputFile.length() == 0L) {
+                cameraOutputFile.delete();
+            }
+        } catch (Exception ignored) {}
+        cameraOutputUri = null;
+        cameraOutputFile = null;
+    }
+
+    private void requestBackgroundLocationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                == PackageManager.PERMISSION_GRANTED) return;
+
+        SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        long lastPrompt = preferences.getLong("background_location_prompt_at", 0L);
+        long now = System.currentTimeMillis();
+        if (now - lastPrompt < 24L * 60L * 60L * 1000L) return;
+        preferences.edit().putLong("background_location_prompt_at", now).apply();
+
+        if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+            ActivityCompat.requestPermissions(
+                this,
+                new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION},
+                BG_LOC_PERMISSION_REQ
+            );
+            return;
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle("اجازهٔ دسترسی دائمی به مکان")
+            .setMessage("برای اینکه ردیابی مسیر پس از قفل‌شدن گوشی و پس از راه‌اندازی مجدد بهتر ادامه پیدا کند، در تنظیمات مجوز مکان را روی «همیشه مجاز» قرار دهید. ردیابی فقط هنگام فعال بودن سفر انجام می‌شود.")
+            .setPositiveButton("باز کردن تنظیمات", (dialog, which) -> {
+                try {
+                    Intent settingsIntent = new Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + getPackageName())
+                    );
+                    startActivity(settingsIntent);
+                } catch (Exception ignored) {}
+            })
+            .setNegativeButton("بعداً", (dialog, which) -> {})
+            .show();
     }
 
     private void createAlertNotificationChannel() {
@@ -235,20 +351,46 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == FILE_CHOOSER_REQ) {
-            if (filePathCallback == null) return;
-            Uri[] results = null;
-            if (resultCode == Activity.RESULT_OK && data != null) {
-                String dataString = data.getDataString();
-                if (dataString != null) {
-                    results = new Uri[]{Uri.parse(dataString)};
+        if (requestCode != FILE_CHOOSER_REQ) return;
+
+        if (filePathCallback == null) {
+            discardPendingCameraPhoto();
+            return;
+        }
+
+        Uri selectedUri = null;
+        Uri[] results = null;
+        if (resultCode == Activity.RESULT_OK) {
+            // دوربین معمولاً URI را در data برنمی‌گرداند؛ فایل خروجی را بررسی می‌کنیم.
+            if (cameraOutputFile != null && cameraOutputUri != null
+                    && cameraOutputFile.exists() && cameraOutputFile.length() > 0L) {
+                selectedUri = cameraOutputUri;
+            } else if (data != null && data.getData() != null) {
+                selectedUri = data.getData();
+            } else if (data != null && data.getClipData() != null) {
+                int count = data.getClipData().getItemCount();
+                results = new Uri[count];
+                for (int i = 0; i < count; i++) {
+                    results[i] = data.getClipData().getItemAt(i).getUri();
                 }
             }
-            filePathCallback.onReceiveValue(results);
-            filePathCallback = null;
         }
-    }
 
+        if (selectedUri != null) {
+            results = new Uri[]{selectedUri};
+        }
+
+        boolean usedCameraFile = selectedUri != null && selectedUri.equals(cameraOutputUri);
+        if (!usedCameraFile) {
+            discardPendingCameraPhoto();
+        } else {
+            cameraOutputUri = null;
+            cameraOutputFile = null;
+        }
+
+        filePathCallback.onReceiveValue(results);
+        filePathCallback = null;
+    }
     @Override
     public void onBackPressed() {
         if (webView != null && webView.canGoBack()) {
@@ -288,6 +430,10 @@ public class MainActivity extends AppCompatActivity {
             SharedPreferences sp = context.getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
             if (trackCode != null && !trackCode.isEmpty()) {
                 sp.edit().putString("trackCode", trackCode).putString("tripId", tripId != null ? tripId : "").putBoolean("tripActive", true).apply();
+            }
+            if (context instanceof MainActivity) {
+                MainActivity activity = (MainActivity) context;
+                activity.runOnUiThread(activity::requestBackgroundLocationPermissionIfNeeded);
             }
             Intent svc = new Intent(context, SafirLocationService.class);
             svc.setAction("START_TRACKING");
