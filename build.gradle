@@ -1,3 +1,17 @@
 plugins {
     id 'com.android.application' version '8.2.2' apply false
 }
+// Kotlin 1.8+ merged kotlin-stdlib-jdk7 and kotlin-stdlib-jdk8 into kotlin-stdlib.
+// Redirect older transitive requests (such as 1.6.0) to the project's 1.8.22 stdlib
+// to prevent duplicate classes during Android packaging.
+subprojects {
+    configurations.configureEach {
+        resolutionStrategy.dependencySubstitution {
+            substitute(module("org.jetbrains.kotlin:kotlin-stdlib-jdk7"))
+                .using(module("org.jetbrains.kotlin:kotlin-stdlib:1.8.22"))
+            substitute(module("org.jetbrains.kotlin:kotlin-stdlib-jdk8"))
+                .using(module("org.jetbrains.kotlin:kotlin-stdlib:1.8.22"))
+        }
+    }
+}
+
