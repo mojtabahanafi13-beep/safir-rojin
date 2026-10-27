@@ -21,6 +21,10 @@ jobs:
 
       - name: Prepare Clean Android Project Structure
         run: |
+        - name: Prepare Clean Android Project Structure
+        run: |
+          rm -rf app build.gradle settings.gradle gradle.properties
+          mkdir -p app/src/main/java/ir/factoranbar/safirrojin
           mkdir -p app/src/main/java/ir/factoranbar/safirrojin
           mkdir -p app/src/main/res/values
           mkdir -p app/src/main/res/mipmap-mdpi
