@@ -2,13 +2,15 @@ name: Build Safir Rojin APK
 
 on:
   push:
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
@@ -17,16 +19,887 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Prepare Clean Android Project Structure
+        run: |
+          mkdir -p app/src/main/java/ir/factoranbar/safirrojin
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/mipmap-mdpi
+          mkdir -p app/src/main/res/mipmap-hdpi
+          mkdir -p app/src/main/res/mipmap-xhdpi
+          mkdir -p app/src/main/res/mipmap-xxhdpi
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
+
+          cat << 'EOF_SETTINGS' > settings.gradle
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "SafirRojin"
+          include ':app'
+          EOF_SETTINGS
+
+          cat << 'EOF_ROOT_GRADLE' > build.gradle
+          plugins {
+              id 'com.android.application' version '8.2.2' apply false
+          }
+          EOF_ROOT_GRADLE
+
+          cat << 'EOF_PROPS' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          EOF_PROPS
+
+          cat << 'EOF_APP_GRADLE' > app/build.gradle
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'ir.factoranbar.safirrojin'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "ir.factoranbar.safirrojin"
+                  minSdk 24
+                  targetSdk 33
+                  versionCode 2
+                  versionName "2.0.0"
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+                  debug {
+                      debuggable true
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+
+          dependencies {
+          }
+          EOF_APP_GRADLE
+
+          cat << 'EOF_MANIFEST' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+              <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="سفیر روژین"
+                  android:icon="@mipmap/ic_launcher"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTask"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".LocationPollingService"
+                      android:enabled="true"
+                      android:exported="false"
+                      android:foregroundServiceType="location" />
+
+                  <receiver
+                      android:name=".BootReceiver"
+                      android:enabled="true"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                          <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                      </intent-filter>
+                  </receiver>
+              </application>
+          </manifest>
+          EOF_MANIFEST
+
+          cat << 'EOF_STRINGS' > app/src/main/res/values/strings.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">سفیر روژین</string>
+          </resources>
+          EOF_STRINGS
+
+          python3 - << 'PY_ICON'
+          import zlib, struct
+          def make_png(size):
+              width = height = size
+              raw_data = bytearray()
+              for y in range(height):
+                  raw_data.append(0)
+                  for x in range(width):
+                      cx, cy = x - width / 2.0, y - height / 2.0
+                      dist = (cx*cx + cy*cy) ** 0.5
+                      if dist > width * 0.46:
+                          raw_data.extend((15, 23, 42, 0))
+                      elif dist > width * 0.40:
+                          raw_data.extend((56, 189, 248, 255))
+                      else:
+                          raw_data.extend((30, 58, 138, 255))
+              def chunk(ct, d):
+                  return struct.pack(">I", len(d)) + ct + d + struct.pack(">I", zlib.crc32(ct + d) & 0xffffffff)
+              ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+              return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(bytes(raw_data), 9)) + chunk(b"IEND", b"")
+          sizes = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
+          for d, s in sizes.items():
+              p = f"app/src/main/res/mipmap-{d}/ic_launcher.png"
+              with open(p, "wb") as f:
+                  f.write(make_png(s))
+          PY_ICON
+
+          cat << 'EOF_MAIN' > app/src/main/java/ir/factoranbar/safirrojin/MainActivity.java
+          package ir.factoranbar.safirrojin;
+
+          import android.Manifest;
+          import android.annotation.SuppressLint;
+          import android.app.Activity;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.PackageManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.PowerManager;
+          import android.provider.Settings;
+          import android.webkit.CookieManager;
+          import android.webkit.GeolocationPermissions;
+          import android.webkit.PermissionRequest;
+          import android.webkit.ValueCallback;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          import java.util.ArrayList;
+          import java.util.List;
+
+          public class MainActivity extends Activity {
+              public static final String PREFS_NAME = "SafirRojinPrefs";
+              public static final String DEFAULT_PORTAL_URL = "https://server.factor-anbar.online/driver/index.html";
+              private static final int FILE_CHOOSER_RESULT_CODE = 1001;
+              private static final int PERMISSIONS_REQUEST_CODE = 1002;
+
+              private WebView webView;
+              private ValueCallback<Uri[]> filePathCallback;
+
+              @SuppressLint("SetJavaScriptEnabled")
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  webView = new WebView(this);
+                  setContentView(webView);
+
+                  requestAllNeededPermissions();
+                  requestBatteryOptimizationExemption();
+
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setDatabaseEnabled(true);
+                  settings.setGeolocationEnabled(true);
+                  settings.setMediaPlaybackRequiresUserGesture(false);
+                  settings.setAllowFileAccess(true);
+                  settings.setAllowContentAccess(true);
+                  settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+                  settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+
+                  CookieManager cookieManager = CookieManager.getInstance();
+                  cookieManager.setAcceptCookie(true);
+                  cookieManager.setAcceptThirdPartyCookies(webView, true);
+
+                  webView.addJavascriptInterface(new WebAppInterface(this), "SafirRojinAndroid");
+
+                  webView.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                          Uri uri = request.getUrl();
+                          String scheme = uri.getScheme();
+                          if (scheme != null && (scheme.equals("tel") || scheme.equals("geo") || scheme.equals("intent") || scheme.equals("waze") || scheme.equals("neshan") || scheme.equals("balad"))) {
+                              try {
+                                  Intent intent = new Intent(Intent.ACTION_VIEW, uri);
+                                  startActivity(intent);
+                              } catch (Exception ignored) {}
+                              return true;
+                          }
+                          return false;
+                      }
+
+                      @Override
+                      public void onPageFinished(WebView view, String url) {
+                          super.onPageFinished(view, url);
+                          CookieManager.getInstance().flush();
+                      }
+                  });
+
+                  webView.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
+                          callback.invoke(origin, true, false);
+                      }
+
+                      @Override
+                      public void onPermissionRequest(final PermissionRequest request) {
+                          runOnUiThread(() -> request.grant(request.getResources()));
+                      }
+
+                      @Override
+                      public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
+                          if (MainActivity.this.filePathCallback != null) {
+                              MainActivity.this.filePathCallback.onReceiveValue(null);
+                          }
+                          MainActivity.this.filePathCallback = filePathCallback;
+                          try {
+                              Intent intent = fileChooserParams.createIntent();
+                              startActivityForResult(intent, FILE_CHOOSER_RESULT_CODE);
+                          } catch (Exception e) {
+                              MainActivity.this.filePathCallback = null;
+                              return false;
+                          }
+                          return true;
+                      }
+                  });
+
+                  SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+                  String savedUrl = prefs.getString("serverUrl", DEFAULT_PORTAL_URL);
+                  if (savedUrl == null || savedUrl.trim().isEmpty()) {
+                      savedUrl = DEFAULT_PORTAL_URL;
+                  }
+                  webView.loadUrl(savedUrl);
+
+                  startBackgroundService();
+              }
+
+              private void requestAllNeededPermissions() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                      List<String> needed = new ArrayList<>();
+                      String[] perms = new String[]{
+                              Manifest.permission.ACCESS_FINE_LOCATION,
+                              Manifest.permission.ACCESS_COARSE_LOCATION,
+                              Manifest.permission.CAMERA
+                      };
+                      for (String p : perms) {
+                          if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) {
+                              needed.add(p);
+                          }
+                      }
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                          if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                              needed.add(Manifest.permission.POST_NOTIFICATIONS);
+                          }
+                      }
+                      if (!needed.isEmpty()) {
+                          requestPermissions(needed.toArray(new String[0]), PERMISSIONS_REQUEST_CODE);
+                      }
+                  }
+              }
+
+              @SuppressLint("BatteryLife")
+              private void requestBatteryOptimizationExemption() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                      try {
+                          PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                          if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+                              Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                              intent.setData(Uri.parse("package:" + getPackageName()));
+                              startActivity(intent);
+                          }
+                      } catch (Exception ignored) {}
+                  }
+              }
+
+              public void startBackgroundService() {
+                  try {
+                      Intent serviceIntent = new Intent(this, LocationPollingService.class);
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          startForegroundService(serviceIntent);
+                      } else {
+                          startService(serviceIntent);
+                      }
+                  } catch (Exception ignored) {}
+              }
+
+              @Override
+              protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
+                  if (requestCode == FILE_CHOOSER_RESULT_CODE) {
+                      if (filePathCallback == null) return;
+                      Uri[] results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+                      filePathCallback.onReceiveValue(results);
+                      filePathCallback = null;
+                  }
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (webView != null && webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      moveTaskToBack(true);
+                  }
+              }
+          }
+          EOF_MAIN
+
+          cat << 'EOF_BRIDGE' > app/src/main/java/ir/factoranbar/safirrojin/WebAppInterface.java
+          package ir.factoranbar.safirrojin;
+
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.os.Build;
+          import android.webkit.JavascriptInterface;
+
+          public class WebAppInterface {
+              private final Context context;
+
+              public WebAppInterface(Context context) {
+                  this.context = context;
+              }
+
+              @JavascriptInterface
+              public void syncDriverSession(String token, String driverId, String vehicleId, String driverName, String serverUrl) {
+                  SharedPreferences prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE);
+                  SharedPreferences.Editor editor = prefs.edit();
+                  if (token != null && !token.isEmpty()) editor.putString("token", token);
+                  if (driverId != null && !driverId.isEmpty()) editor.putString("driverId", driverId);
+                  if (vehicleId != null && !vehicleId.isEmpty()) editor.putString("vehicleId", vehicleId);
+                  if (driverName != null && !driverName.isEmpty()) editor.putString("driverName", driverName);
+                  if (serverUrl != null && !serverUrl.isEmpty()) editor.putString("serverUrl", serverUrl);
+                  editor.apply();
+                  triggerServiceUpdate(LocationPollingService.ACTION_SYNC_SESSION);
+              }
+
+              @JavascriptInterface
+              public void startTripTracking(String tripId, String vehicleId, String driverName) {
+                  SharedPreferences prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE);
+                  prefs.edit()
+                          .putBoolean("tripActive", true)
+                          .putString("activeTripId", tripId != null ? tripId : "")
+                          .putString("vehicleId", vehicleId != null ? vehicleId : prefs.getString("vehicleId", ""))
+                          .putString("driverName", driverName != null ? driverName : prefs.getString("driverName", ""))
+                          .apply();
+                  triggerServiceUpdate(LocationPollingService.ACTION_START_TRIP);
+              }
+
+              @JavascriptInterface
+              public void stopTripTracking() {
+                  SharedPreferences prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE);
+                  prefs.edit()
+                          .putBoolean("tripActive", false)
+                          .putString("activeTripId", "")
+                          .apply();
+                  triggerServiceUpdate(LocationPollingService.ACTION_STOP_TRIP);
+              }
+
+              @JavascriptInterface
+              public boolean isNativeAndroidApp() {
+                  return true;
+              }
+
+              private void triggerServiceUpdate(String action) {
+                  try {
+                      Intent intent = new Intent(context, LocationPollingService.class);
+                      intent.setAction(action);
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          context.startForegroundService(intent);
+                      } else {
+                          context.startService(intent);
+                      }
+                  } catch (Exception ignored) {}
+              }
+          }
+          EOF_BRIDGE
+
+          cat << 'EOF_SERVICE' > app/src/main/java/ir/factoranbar/safirrojin/LocationPollingService.java
+          package ir.factoranbar.safirrojin;
+
+          import android.Manifest;
+          import android.annotation.SuppressLint;
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.PackageManager;
+          import android.graphics.BitmapFactory;
+          import android.location.Location;
+          import android.location.LocationListener;
+          import android.location.LocationManager;
+          import android.media.RingtoneManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.IBinder;
+          import android.os.Looper;
+          import android.os.PowerManager;
+
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+
+          import java.io.BufferedReader;
+          import java.io.InputStreamReader;
+          import java.io.OutputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.nio.charset.StandardCharsets;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+
+          public class LocationPollingService extends Service implements LocationListener {
+              public static final String ACTION_START_TRIP = "ir.factoranbar.safirrojin.START_TRIP";
+              public static final String ACTION_STOP_TRIP = "ir.factoranbar.safirrojin.STOP_TRIP";
+              public static final String ACTION_SYNC_SESSION = "ir.factoranbar.safirrojin.SYNC_SESSION";
+
+              private static final String CHANNEL_SERVICE_ID = "safir_rojin_service_channel";
+              private static final String CHANNEL_ALERT_ID = "safir_rojin_alert_channel";
+              private static final int NOTIFICATION_SERVICE_ID = 101;
+
+              private LocationManager locationManager;
+              private PowerManager.WakeLock wakeLock;
+              private Handler pollHandler;
+              private ExecutorService networkExecutor;
+              private boolean isTrackingGps = false;
+
+              private final Runnable messagePollRunnable = new Runnable() {
+                  @Override
+                  public void run() {
+                      pollServerMessagesAndMissions();
+                      if (pollHandler != null) {
+                          pollHandler.postDelayed(this, 15000);
+                      }
+                  }
+              };
+
+              @Override
+              public void onCreate() {
+                  super.onCreate();
+                  createNotificationChannels();
+                  networkExecutor = Executors.newSingleThreadExecutor();
+                  pollHandler = new Handler(Looper.getMainLooper());
+                  locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+
+                  PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                  if (pm != null) {
+                      wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SafirRojin::BackgroundLock");
+                      wakeLock.acquire();
+                  }
+
+                  try {
+                      startForeground(NOTIFICATION_SERVICE_ID, buildForegroundNotification("سفیر روژین • آماده دریافت پیام و ماموریت"));
+                  } catch (Throwable ignored) {}
+                  pollHandler.post(messagePollRunnable);
+
+                  SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE);
+                  if (prefs.getBoolean("tripActive", false)) {
+                      startGpsTracking();
+                  }
+              }
+
+              @Override
+              public int onStartCommand(Intent intent, int flags, int startId) {
+                  if (intent != null && intent.getAction() != null) {
+                      String action = intent.getAction();
+                      if (ACTION_START_TRIP.equals(action)) {
+                          startGpsTracking();
+                      } else if (ACTION_STOP_TRIP.equals(action)) {
+                          stopGpsTracking();
+                      }
+                  }
+                  return START_STICKY;
+              }
+
+              @SuppressLint("MissingPermission")
+              private void startGpsTracking() {
+                  if (isTrackingGps || locationManager == null) return;
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                      if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+                          checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                          return;
+                      }
+                  }
+                  try {
+                      if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                          locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 10000, 10f, this, Looper.getMainLooper());
+                      }
+                      if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                          locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 15000, 20f, this, Looper.getMainLooper());
+                      }
+                      isTrackingGps = true;
+                      updateForegroundNotification("سفیر روژین • در حال ثبت زنده مسیر و پایش پیام‌ها");
+                  } catch (Exception ignored) {}
+              }
+
+              private void stopGpsTracking() {
+                  if (!isTrackingGps || locationManager == null) return;
+                  try {
+                      locationManager.removeUpdates(this);
+                  } catch (Exception ignored) {}
+                  isTrackingGps = false;
+                  updateForegroundNotification("سفیر روژین • آماده دریافت پیام و ماموریت");
+              }
+
+              @Override
+              public void onLocationChanged(Location location) {
+                  if (location == null) return;
+                  networkExecutor.execute(() -> sendLocationToServer(location));
+              }
+
+              @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
+              @Override public void onProviderEnabled(String provider) {}
+              @Override public void onProviderDisabled(String provider) {}
+
+              private String getBaseOrigin() {
+                  SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE);
+                  String rawUrl = prefs.getString("serverUrl", MainActivity.DEFAULT_PORTAL_URL);
+                  try {
+                      Uri uri = Uri.parse(rawUrl);
+                      String scheme = uri.getScheme() != null ? uri.getScheme() : "https";
+                      String authority = uri.getAuthority() != null ? uri.getAuthority() : "server.factor-anbar.online";
+                      return scheme + "://" + authority;
+                  } catch (Exception e) {
+                      return "https://server.factor-anbar.online";
+                  }
+              }
+
+              private void sendLocationToServer(Location loc) {
+                  SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE);
+                  String token = prefs.getString("token", "");
+                  String vehicleId = prefs.getString("vehicleId", "");
+                  String driverName = prefs.getString("driverName", "");
+                  if (token.isEmpty() || vehicleId.isEmpty()) return;
+
+                  try {
+                      URL url = new URL(getBaseOrigin() + "/api/fleet/points");
+                      HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                      conn.setRequestMethod("POST");
+                      conn.setConnectTimeout(10000);
+                      conn.setReadTimeout(10000);
+                      conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+                      conn.setRequestProperty("Authorization", "Bearer " + token);
+                      conn.setDoOutput(true);
+
+                      JSONObject point = new JSONObject();
+                      point.put("vehicleId", vehicleId);
+                      point.put("driverName", driverName);
+                      point.put("lat", loc.getLatitude());
+                      point.put("lng", loc.getLongitude());
+                      point.put("speedKmh", loc.hasSpeed() ? Math.round(loc.getSpeed() * 3.6) : 0);
+                      point.put("accuracyM", loc.hasAccuracy() ? Math.round(loc.getAccuracy()) : 10);
+                      point.put("heading", loc.hasBearing() ? Math.round(loc.getBearing()) : 0);
+                      point.put("ts", System.currentTimeMillis());
+
+                      JSONArray pointsArr = new JSONArray();
+                      pointsArr.put(point);
+                      JSONObject body = new JSONObject();
+                      body.put("points", pointsArr);
+
+                      byte[] out = body.toString().getBytes(StandardCharsets.UTF_8);
+                      try (OutputStream os = conn.getOutputStream()) {
+                          os.write(out);
+                      }
+
+                      int code = conn.getResponseCode();
+                      if (code >= 200 && code < 300) {
+                          BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                          StringBuilder sb = new StringBuilder();
+                          String line;
+                          while ((line = br.readLine()) != null) sb.append(line);
+                          br.close();
+
+                          JSONObject resp = new JSONObject(sb.toString());
+                          JSONArray autoFinished = resp.optJSONArray("autoFinishedTrips");
+                          if (autoFinished != null && autoFinished.length() > 0) {
+                              prefs.edit().putBoolean("tripActive", false).putString("activeTripId", "").apply();
+                              pollHandler.post(this::stopGpsTracking);
+                              showBrandedNotification("سفیر روژین • پایان خودکار سفر", "ورود شما به محدوده انبار ثبت شد و سفر به صورت خودکار پایان یافت.", 9001);
+                          }
+                      }
+                      conn.disconnect();
+                  } catch (Exception ignored) {}
+              }
+
+              private void pollServerMessagesAndMissions() {
+                  networkExecutor.execute(() -> {
+                      SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE);
+                      String token = prefs.getString("token", "");
+                      String vehicleId = prefs.getString("vehicleId", "");
+                      String driverId = prefs.getString("driverId", "");
+                      if (token.isEmpty()) return;
+
+                      String origin = getBaseOrigin();
+
+                      if (!vehicleId.isEmpty()) {
+                          try {
+                              URL url = new URL(origin + "/api/fleet/messages?vehicleId=" + Uri.encode(vehicleId) + "&limit=10");
+                              HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                              conn.setRequestMethod("GET");
+                              conn.setConnectTimeout(8000);
+                              conn.setReadTimeout(8000);
+                              conn.setRequestProperty("Authorization", "Bearer " + token);
+
+                              if (conn.getResponseCode() == 200) {
+                                  BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                                  StringBuilder sb = new StringBuilder();
+                                  String line;
+                                  while ((line = br.readLine()) != null) sb.append(line);
+                                  br.close();
+
+                                  JSONObject data = new JSONObject(sb.toString());
+                                  JSONArray items = data.optJSONArray("items");
+                                  long lastSeenMsgId = prefs.getLong("lastSeenMsgId", 0);
+                                  long maxId = lastSeenMsgId;
+
+                                  if (items != null) {
+                                      for (int i = 0; i < items.length(); i++) {
+                                          JSONObject m = items.getJSONObject(i);
+                                          long id = m.optLong("id", 0);
+                                          String sender = m.optString("sender", "");
+                                          if (id > lastSeenMsgId && !"driver".equalsIgnoreCase(sender)) {
+                                              String msgText = m.optString("message", "");
+                                              boolean hasImg = !m.optString("imageData", "").isEmpty();
+                                              String displayBody = !msgText.isEmpty() ? msgText : (hasImg ? "📷 تصویر جدید از واحد لجستیک" : "پیام جدید دریافت شد");
+                                              showBrandedNotification("سفیر روژین • پیام جدید لجستیک", displayBody, (int) (2000 + (id % 5000)));
+                                          }
+                                          if (id > maxId) maxId = id;
+                                      }
+                                      if (maxId > lastSeenMsgId) {
+                                          prefs.edit().putLong("lastSeenMsgId", maxId).apply();
+                                      }
+                                  }
+                              }
+                              conn.disconnect();
+                          } catch (Exception ignored) {}
+                      }
+
+                      if (!driverId.isEmpty() || !vehicleId.isEmpty()) {
+                          try {
+                              String q = !driverId.isEmpty() ? ("driverId=" + Uri.encode(driverId)) : ("vehicleId=" + Uri.encode(vehicleId));
+                              URL url = new URL(origin + "/api/fleet/missions?" + q);
+                              HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                              conn.setRequestMethod("GET");
+                              conn.setConnectTimeout(8000);
+                              conn.setReadTimeout(8000);
+                              conn.setRequestProperty("Authorization", "Bearer " + token);
+
+                              if (conn.getResponseCode() == 200) {
+                                  BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                                  StringBuilder sb = new StringBuilder();
+                                  String line;
+                                  while ((line = br.readLine()) != null) sb.append(line);
+                                  br.close();
+
+                                  JSONObject data = new JSONObject(sb.toString());
+                                  JSONArray items = data.optJSONArray("items");
+                                  long lastSeenMissionId = prefs.getLong("lastSeenMissionId", 0);
+                                  long maxMId = lastSeenMissionId;
+
+                                  if (items != null) {
+                                      for (int i = 0; i < items.length(); i++) {
+                                          JSONObject ms = items.getJSONObject(i);
+                                          long id = ms.optLong("id", 0);
+                                          if (id > lastSeenMissionId && lastSeenMissionId > 0) {
+                                              String title = ms.optString("title", "ماموریت جدید");
+                                              showBrandedNotification("سفیر روژین • ماموریت جدید", title, (int) (8000 + (id % 1000)));
+                                          }
+                                          if (id > maxMId) maxMId = id;
+                                      }
+                                      if (maxMId > lastSeenMissionId) {
+                                          prefs.edit().putLong("lastSeenMissionId", maxMId).apply();
+                                      }
+                                  }
+                              }
+                              conn.disconnect();
+                          } catch (Exception ignored) {}
+                      }
+                  });
+              }
+
+              private Notification buildForegroundNotification(String contentText) {
+                  Intent notificationIntent = new Intent(this, MainActivity.class);
+                  notificationIntent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                  int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
+                  PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, flags);
+
+                  Notification.Builder builder;
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      builder = new Notification.Builder(this, CHANNEL_SERVICE_ID);
+                  } else {
+                      builder = new Notification.Builder(this);
+                  }
+
+                  return builder
+                          .setContentTitle("سفیر روژین")
+                          .setContentText(contentText)
+                          .setSmallIcon(R.mipmap.ic_launcher)
+                          .setLargeIcon(BitmapFactory.decodeResource(getResources(), R.mipmap.ic_launcher))
+                          .setContentIntent(pendingIntent)
+                          .setOngoing(true)
+                          .build();
+              }
+
+              private void updateForegroundNotification(String text) {
+                  NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                  if (nm != null) {
+                      nm.notify(NOTIFICATION_SERVICE_ID, buildForegroundNotification(text));
+                  }
+              }
+
+              private void showBrandedNotification(String title, String body, int notificationId) {
+                  Intent intent = new Intent(this, MainActivity.class);
+                  intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                  int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
+                  PendingIntent pendingIntent = PendingIntent.getActivity(this, notificationId, intent, flags);
+
+                  Uri soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+
+                  Notification.Builder builder;
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      builder = new Notification.Builder(this, CHANNEL_ALERT_ID);
+                  } else {
+                      builder = new Notification.Builder(this);
+                      builder.setPriority(Notification.PRIORITY_HIGH);
+                      builder.setSound(soundUri);
+                      builder.setDefaults(Notification.DEFAULT_ALL);
+                  }
+
+                  builder.setSmallIcon(R.mipmap.ic_launcher)
+                          .setLargeIcon(BitmapFactory.decodeResource(getResources(), R.mipmap.ic_launcher))
+                          .setContentTitle(title)
+                          .setContentText(body)
+                          .setStyle(new Notification.BigTextStyle().bigText(body))
+                          .setAutoCancel(true)
+                          .setContentIntent(pendingIntent);
+
+                  NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                  if (nm != null) {
+                      nm.notify(notificationId, builder.build());
+                  }
+              }
+
+              private void createNotificationChannels() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      NotificationManager nm = getSystemService(NotificationManager.class);
+                      if (nm == null) return;
+
+                      NotificationChannel serviceChannel = new NotificationChannel(
+                              CHANNEL_SERVICE_ID,
+                              "سرویس پس‌زمینه سفیر روژین",
+                              NotificationManager.IMPORTANCE_LOW
+                      );
+                      serviceChannel.setDescription("فعال نگه‌داشتن ارتباط و موقعیت‌یاب سفیر روژین");
+                      nm.createNotificationChannel(serviceChannel);
+
+                      NotificationChannel alertChannel = new NotificationChannel(
+                              CHANNEL_ALERT_ID,
+                              "اعلان پیام‌ها و ماموریت‌های سفیر روژین",
+                              NotificationManager.IMPORTANCE_HIGH
+                      );
+                      alertChannel.setDescription("هشدار فوری پیام جدید لجستیک و ماموریت‌ها");
+                      alertChannel.enableVibration(true);
+                      nm.createNotificationChannel(alertChannel);
+                  }
+              }
+
+              @Override
+              public void onDestroy() {
+                  if (pollHandler != null) pollHandler.removeCallbacksAndMessages(null);
+                  stopGpsTracking();
+                  if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+                  if (networkExecutor != null) networkExecutor.shutdownNow();
+                  super.onDestroy();
+              }
+
+              @Override
+              public IBinder onBind(Intent intent) {
+                  return null;
+              }
+          }
+          EOF_SERVICE
+
+          cat << 'EOF_BOOT' > app/src/main/java/ir/factoranbar/safirrojin/BootReceiver.java
+          package ir.factoranbar.safirrojin;
+
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.os.Build;
+
+          public class BootReceiver extends BroadcastReceiver {
+              @Override
+              public void onReceive(Context context, Intent intent) {
+                  if (intent != null && (Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction()) ||
+                                         Intent.ACTION_MY_PACKAGE_REPLACED.equals(intent.getAction()))) {
+                      Intent serviceIntent = new Intent(context, LocationPollingService.class);
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          context.startForegroundService(serviceIntent);
+                      } else {
+                          context.startService(serviceIntent);
+                      }
+                  }
+              }
+          }
+          EOF_BOOT
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.5'
+          cache-disabled: true
 
       - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon
+        run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Upload Safir-Rojin.apk
+      - name: Rename APK for Easy Download
+        run: cp app/build/outputs/apk/debug/app-debug.apk Safir-Rojin.apk
+
+      - name: Upload Safir-Rojin APK
         uses: actions/upload-artifact@v4
         with:
           name: Safir-Rojin-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: Safir-Rojin.apk
