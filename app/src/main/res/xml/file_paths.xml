@@ -3,6 +3,9 @@
     <external-files-path
         name="safir_chat_photos"
         path="Pictures/" />
+    <external-files-path
+        name="safir_updates"
+        path="updates/" />
     <cache-path
         name="safir_camera_cache"
         path="camera/" />

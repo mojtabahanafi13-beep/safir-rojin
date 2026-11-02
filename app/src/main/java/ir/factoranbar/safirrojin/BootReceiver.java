@@ -13,11 +13,13 @@ public class BootReceiver extends BroadcastReceiver {
     public void onReceive(Context context, Intent intent) {
         if (intent == null) return;
         String action = intent.getAction();
+        boolean revive = SafirLocationService.ACTION_REVIVE.equals(action);
         if (!Intent.ACTION_BOOT_COMPLETED.equals(action)
-                && !Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) return;
+                && !Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)
+                && !revive) return;
 
         // اعلان‌های پس‌زمینه پس از بوت یا به‌روزرسانی دوباره آغاز شوند.
-        try {
+        if (!revive) try {
             Intent notificationService = new Intent(context, SafirNotificationService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(notificationService);

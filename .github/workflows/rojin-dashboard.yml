@@ -8,6 +8,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      SAFIR_KS_PASS: ${{ secrets.SAFIR_KS_PASS }}
+      SAFIR_KEY_ALIAS: safir
 
     steps:
       - name: Checkout Repository
@@ -26,6 +29,12 @@ jobs:
 
       - name: Fix Duplicate Notifications in Safir Rojin
         run: python3 -c "import pathlib, re; dedup_tpl = 'package __PKG__;\n\nimport android.app.Notification;\n\npublic class SafirDedup {\n    private static long lastAlertMs = 0L;\n    private static String lastKey = \x22\x22;\n\n    public static synchronized boolean allow(int id, Notification n) {\n        if (n == null) return false;\n        if ((n.flags & Notification.FLAG_ONGOING_EVENT) != 0) return true;\n        if (id == 1 || id == 101 || id == 201) return true;\n        String title = \x22\x22;\n        String text = \x22\x22;\n        try {\n            if (n.extras != null) {\n                CharSequence t = n.extras.getCharSequence(Notification.EXTRA_TITLE);\n                CharSequence b = n.extras.getCharSequence(Notification.EXTRA_TEXT);\n                if (t != null) title = t.toString();\n                if (b != null) text = b.toString();\n            }\n        } catch (Exception ignored) {}\n        if (title.contains(\x22پرتال راننده\x22)) return false;\n        long now = System.currentTimeMillis();\n        String key = title + \x22|\x22 + text;\n        if (now - lastAlertMs < 15000L || (key.equals(lastKey) && now - lastAlertMs < 60000L)) {\n            return false;\n        }\n        lastAlertMs = now;\n        lastKey = key;\n        return true;\n    }\n}\n'; jfiles = list(pathlib.Path('app/src/main/java').rglob('*.java')); pkg = 'ir.factoranbar.safirrojin'; m = re.search(r'package\s+([a-zA-Z0-9_.]+)\s*;', jfiles[0].read_text('utf-8', errors='ignore')) if jfiles else None; pkg = m.group(1) if m else pkg; (jfiles[0].parent / 'SafirDedup.java').write_text(dedup_tpl.replace('__PKG__', pkg), 'utf-8') if jfiles else None; [p.write_text(re.sub(r'(\b\w+)\.notify\(([^,]+),\s*([^;]+)\)\s*;', r'{ android.app.Notification _n = \3; if (SafirDedup.allow(\2, _n)) \1.notify(\2, _n); }', p.read_text('utf-8', errors='ignore')).replace('window.SafirRojinAndroid.showNativeNotification', 'void').replace('CookieManager.getInstance().flush();', 'CookieManager.getInstance().flush(); view.evaluateJavascript(\x22window.sendDriverLocalSystemNotification=function(){};try{if(navigator.serviceWorker)navigator.serviceWorker.getRegistrations().then(function(r){r.forEach(function(x){x.unregister();});});}catch(e){}\x22, null);'), 'utf-8') for p in jfiles if p.name != 'SafirDedup.java']"
+
+      - name: Prepare fixed signing key
+        env:
+          SAFIR_KS_B64: ${{ secrets.SAFIR_KS_B64 }}
+        run: |
+          if [ -n "$SAFIR_KS_B64" ]; then echo "$SAFIR_KS_B64" | base64 -d > safir-release.jks; echo "fixed key ready"; else echo "no SAFIR_KS_B64 secret - using temporary debug key"; fi
 
       - name: Build Safir Rojin APK
         run: if [ -f ./gradlew ]; then chmod +x ./gradlew && ./gradlew assembleDebug --no-daemon --stacktrace; else gradle assembleDebug --no-daemon --stacktrace; fi
