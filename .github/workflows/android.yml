@@ -11,6 +11,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      SAFIR_KS_PASS: ${{ secrets.SAFIR_KS_PASS }}
+      SAFIR_KEY_ALIAS: safir
 
     steps:
       - name: Checkout Repository
@@ -27,6 +30,12 @@ jobs:
         with:
           gradle-version: "8.5"
           cache-disabled: true
+
+      - name: Prepare fixed signing key
+        env:
+          SAFIR_KS_B64: ${{ secrets.SAFIR_KS_B64 }}
+        run: |
+          if [ -n "$SAFIR_KS_B64" ]; then echo "$SAFIR_KS_B64" | base64 -d > safir-release.jks; echo "fixed key ready"; else echo "no SAFIR_KS_B64 secret - using temporary debug key"; fi
 
       - name: Build Debug APK
         run: gradle assembleDebug --no-daemon --stacktrace

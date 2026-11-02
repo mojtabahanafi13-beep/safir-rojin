@@ -7,6 +7,7 @@ import android.app.AlertDialog;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.ClipData;
 import android.content.Intent;
@@ -31,6 +32,7 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
@@ -40,6 +42,10 @@ import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -264,15 +270,136 @@ public class MainActivity extends AppCompatActivity {
         cameraOutputFile = null;
     }
 
-    private void requestBackgroundLocationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+    // بعد از شروع ردیابی: اول مجوز «همیشه»، اگر لازم نبود راهنمای تنظیم باتری/شروع خودکار گوشی.
+    // ───── به‌روزرسانی داخل برنامه: دانلود APK از سرور خودمان و باز کردن پنجرهٔ نصب (راننده فقط «نصب» را می‌زند) ─────
+    public void startUpdateDownload(final String url) {
+        try {
+            if (url == null || !url.startsWith(SERVER_ORIGIN + "/")) {
+                Toast.makeText(this, "آدرس به‌روزرسانی معتبر نیست.", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getPackageManager().canRequestPackageInstalls()) {
+                new AlertDialog.Builder(this)
+                    .setTitle("اجازهٔ نصب نسخهٔ جدید")
+                    .setMessage("برای به‌روزرسانی، در صفحهٔ بعد گزینهٔ «اجازه دادن از این منبع» را روشن کنید و برگردید؛ سپس دوباره دکمهٔ به‌روزرسانی را بزنید.")
+                    .setPositiveButton("باز کردن تنظیمات", (d, w) -> {
+                        try {
+                            startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName())));
+                        } catch (Exception ignored) {}
+                    })
+                    .setNegativeButton("بعداً", null)
+                    .show();
+                return;
+            }
+            Toast.makeText(this, "در حال دانلود نسخهٔ جدید… چند لحظه صبر کنید", Toast.LENGTH_LONG).show();
+            new Thread(() -> {
+                File out = null;
+                try {
+                    File dir = getExternalFilesDir("updates");
+                    if (dir == null) dir = new File(getCacheDir(), "updates");
+                    if (!dir.exists()) dir.mkdirs();
+                    out = new File(dir, "Safir-Rojin.apk");
+                    HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+                    c.setConnectTimeout(20000);
+                    c.setReadTimeout(60000);
+                    if (c.getResponseCode() != 200) throw new Exception("HTTP " + c.getResponseCode());
+                    try (InputStream in = c.getInputStream(); FileOutputStream fo = new FileOutputStream(out, false)) {
+                        byte[] buf = new byte[32768];
+                        int n;
+                        while ((n = in.read(buf)) > 0) fo.write(buf, 0, n);
+                    }
+                    c.disconnect();
+                    if (out.length() < 100000L) throw new Exception("small file");
+                    final File apk = out;
+                    runOnUiThread(() -> {
+                        try {
+                            Uri uri = FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".fileprovider", apk);
+                            Intent i = new Intent(Intent.ACTION_VIEW);
+                            i.setDataAndType(uri, "application/vnd.android.package-archive");
+                            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(i);
+                        } catch (Exception e) {
+                            Toast.makeText(MainActivity.this, "باز کردن نصب‌کننده ناموفق بود.", Toast.LENGTH_LONG).show();
+                        }
+                    });
+                } catch (Exception e) {
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "دانلود نسخهٔ جدید ناموفق بود؛ اینترنت را بررسی و دوباره تلاش کنید.", Toast.LENGTH_LONG).show());
+                }
+            }).start();
+        } catch (Exception ignored) {}
+    }
+
+    private void onTrackingStartedUi() {
+        if (!requestBackgroundLocationPermissionIfNeeded()) showOemKeepAliveGuideIfNeeded();
+    }
+
+    private void showOemKeepAliveGuideIfNeeded() {
+        try {
+            SharedPreferences sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+            if (sp.getBoolean("oem_guide_done", false)) return;
+            long now = System.currentTimeMillis();
+            if (now - sp.getLong("oem_guide_prompt_at", 0L) < 3L * 24L * 60L * 60L * 1000L) return;
+            String man = (Build.MANUFACTURER == null ? "" : Build.MANUFACTURER).toLowerCase(java.util.Locale.ROOT);
+            final List<ComponentName> targets = new ArrayList<>();
+            String tip;
+            if (man.contains("xiaomi") || man.contains("redmi") || man.contains("poco")) {
+                targets.add(new ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"));
+                tip = "«شروع خودکار (Autostart)» را برای سفیر روژین روشن کنید و در بخش باتری گزینهٔ «بدون محدودیت» را انتخاب کنید. سپس برنامه را در لیست برنامه‌های اخیر قفل کنید.";
+            } else if (man.contains("huawei") || man.contains("honor")) {
+                targets.add(new ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"));
+                targets.add(new ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity"));
+                tip = "برای سفیر روژین «مدیریت دستی» را بزنید و هر سه گزینه (راه‌اندازی خودکار، راه‌اندازی ثانویه، اجرا در پس‌زمینه) را روشن کنید.";
+            } else if (man.contains("oppo") || man.contains("realme") || man.contains("oneplus")) {
+                targets.add(new ComponentName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity"));
+                targets.add(new ComponentName("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity"));
+                targets.add(new ComponentName("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity"));
+                tip = "«شروع خودکار / Auto-launch» و «فعالیت در پس‌زمینه» را برای سفیر روژین روشن کنید.";
+            } else if (man.contains("vivo") || man.contains("iqoo")) {
+                targets.add(new ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"));
+                targets.add(new ComponentName("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity"));
+                tip = "سفیر روژین را در «شروع خودکار» و «مصرف باتری در پس‌زمینه» مجاز کنید.";
+            } else if (man.contains("samsung")) {
+                targets.add(new ComponentName("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity"));
+                tip = "از مسیر باتری ← «محدودیت‌های استفاده در پس‌زمینه» ← «برنامه‌های هرگز خواب‌نرو»، سفیر روژین را اضافه کنید.";
+            } else {
+                return;
+            }
+            sp.edit().putLong("oem_guide_prompt_at", now).apply();
+            new AlertDialog.Builder(this)
+                .setTitle("برای قطع نشدن ردیابی")
+                .setMessage("در این مدل گوشی، سیستم ممکن است برنامه را هنگام خاموش بودن صفحه ببندد و مسیر شما ثبت نشود.\n\n" + tip)
+                .setPositiveButton("باز کردن تنظیمات", (d, w) -> {
+                    boolean opened = false;
+                    for (ComponentName cn : targets) {
+                        try {
+                            Intent i = new Intent();
+                            i.setComponent(cn);
+                            startActivity(i);
+                            opened = true;
+                            break;
+                        } catch (Exception ignored) {}
+                    }
+                    if (!opened) {
+                        try {
+                            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
+                        } catch (Exception ignored) {}
+                    }
+                })
+                .setNeutralButton("انجام دادم", (d, w) -> sp.edit().putBoolean("oem_guide_done", true).apply())
+                .setNegativeButton("بعداً", null)
+                .show();
+        } catch (Exception ignored) {}
+    }
+
+    private boolean requestBackgroundLocationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false;
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-                == PackageManager.PERMISSION_GRANTED) return;
+                == PackageManager.PERMISSION_GRANTED) return false;
 
         SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         long lastPrompt = preferences.getLong("background_location_prompt_at", 0L);
         long now = System.currentTimeMillis();
-        if (now - lastPrompt < 24L * 60L * 60L * 1000L) return;
+        if (now - lastPrompt < 24L * 60L * 60L * 1000L) return false;
         preferences.edit().putLong("background_location_prompt_at", now).apply();
 
         if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
@@ -281,7 +408,7 @@ public class MainActivity extends AppCompatActivity {
                 new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION},
                 BG_LOC_PERMISSION_REQ
             );
-            return;
+            return true;
         }
 
         new AlertDialog.Builder(this)
@@ -298,6 +425,7 @@ public class MainActivity extends AppCompatActivity {
             })
             .setNegativeButton("بعداً", (dialog, which) -> {})
             .show();
+        return true;
     }
 
     private void createAlertNotificationChannel() {
@@ -433,7 +561,7 @@ public class MainActivity extends AppCompatActivity {
             }
             if (context instanceof MainActivity) {
                 MainActivity activity = (MainActivity) context;
-                activity.runOnUiThread(activity::requestBackgroundLocationPermissionIfNeeded);
+                activity.runOnUiThread(activity::onTrackingStartedUi);
             }
             Intent svc = new Intent(context, SafirLocationService.class);
             svc.setAction("START_TRACKING");
@@ -450,6 +578,21 @@ public class MainActivity extends AppCompatActivity {
             sp.edit().putBoolean("tripActive", false).apply();
             Intent svc = new Intent(context, SafirLocationService.class);
             context.stopService(svc);
+        }
+
+        @JavascriptInterface
+        public int getVersionCode() {
+            try {
+                android.content.pm.PackageInfo pi = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
+                return (int) (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? pi.getLongVersionCode() : pi.versionCode);
+            } catch (Exception e) { return 1; }
+        }
+
+        @JavascriptInterface
+        public void installUpdate(final String url) {
+            if (!(context instanceof MainActivity)) return;
+            final MainActivity a = (MainActivity) context;
+            a.runOnUiThread(() -> a.startUpdateDownload(url));
         }
 
         @JavascriptInterface

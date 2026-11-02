@@ -10,17 +10,33 @@ android {
         applicationId "ir.factoranbar.safirrojin"
         minSdk 23
         targetSdk 34
-        versionCode 1
-        versionName "1.0.0"
+        versionCode 2
+        versionName "1.1.0"
+    }
+
+    // امضای ثابت: اگر فایل کلید (safir-release.jks) در ریشهٔ پروژه موجود باشد (در GitHub Actions از Secrets ساخته می‌شود)،
+    // همهٔ نسخه‌ها با یک امضا ساخته می‌شوند تا نسخهٔ جدید روی نسخهٔ نصب‌شده «به‌روزرسانی» شود و نیازی به حذف و نصب مجدد نباشد.
+    def ksFile = rootProject.file('safir-release.jks')
+    def useFixedKey = ksFile.exists() && System.getenv('SAFIR_KS_PASS')
+    if (useFixedKey) {
+        signingConfigs {
+            safirFixed {
+                storeFile ksFile
+                storePassword System.getenv('SAFIR_KS_PASS')
+                keyAlias System.getenv('SAFIR_KEY_ALIAS') ?: 'safir'
+                keyPassword System.getenv('SAFIR_KS_PASS')
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug
+            signingConfig useFixedKey ? signingConfigs.safirFixed : signingConfigs.debug
         }
         debug {
             applicationIdSuffix ""
+            if (useFixedKey) signingConfig signingConfigs.safirFixed
         }
     }
     compileOptions {
