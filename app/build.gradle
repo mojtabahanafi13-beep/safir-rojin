@@ -10,8 +10,8 @@ android {
         applicationId "ir.factoranbar.safirrojin"
         minSdk 23
         targetSdk 34
-        versionCode 2
-        versionName "1.1.0"
+        versionCode 3
+        versionName "1.2.0"
     }
 
     // امضای ثابت: اگر فایل کلید (safir-release.jks) در ریشهٔ پروژه موجود باشد (در GitHub Actions از Secrets ساخته می‌شود)،
