@@ -1,17 +1,51 @@
 plugins {
-    id 'com.android.application' version '8.2.2' apply false
+    id 'com.android.application'
 }
-// Kotlin 1.8+ merged kotlin-stdlib-jdk7 and kotlin-stdlib-jdk8 into kotlin-stdlib.
-// Redirect older transitive requests (such as 1.6.0) to the project's 1.8.22 stdlib
-// to prevent duplicate classes during Android packaging.
-subprojects {
-    configurations.configureEach {
-        resolutionStrategy.dependencySubstitution {
-            substitute(module("org.jetbrains.kotlin:kotlin-stdlib-jdk7"))
-                .using(module("org.jetbrains.kotlin:kotlin-stdlib:1.8.22"))
-            substitute(module("org.jetbrains.kotlin:kotlin-stdlib-jdk8"))
-                .using(module("org.jetbrains.kotlin:kotlin-stdlib:1.8.22"))
+
+android {
+    namespace 'ir.factoranbar.safirrojin'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "ir.factoranbar.safirrojin"
+        minSdk 23
+        targetSdk 34
+        versionCode 4
+        versionName "1.3.0"
+    }
+
+    // امضای ثابت: اگر فایل کلید (safir-release.jks) در ریشهٔ پروژه موجود باشد (در GitHub Actions از Secrets ساخته می‌شود)،
+    // همهٔ نسخه‌ها با یک امضا ساخته می‌شوند تا نسخهٔ جدید روی نسخهٔ نصب‌شده «به‌روزرسانی» شود و نیازی به حذف و نصب مجدد نباشد.
+    def ksFile = rootProject.file('safir-release.jks')
+    def useFixedKey = ksFile.exists() && System.getenv('SAFIR_KS_PASS')
+    if (useFixedKey) {
+        signingConfigs {
+            safirFixed {
+                storeFile ksFile
+                storePassword System.getenv('SAFIR_KS_PASS')
+                keyAlias System.getenv('SAFIR_KEY_ALIAS') ?: 'safir'
+                keyPassword System.getenv('SAFIR_KS_PASS')
+            }
         }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig useFixedKey ? signingConfigs.safirFixed : signingConfigs.debug
+        }
+        debug {
+            applicationIdSuffix ""
+            if (useFixedKey) signingConfig signingConfigs.safirFixed
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 }
 
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.core:core:1.12.0'
+}
