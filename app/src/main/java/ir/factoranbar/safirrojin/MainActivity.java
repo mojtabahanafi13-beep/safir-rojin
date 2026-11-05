@@ -14,11 +14,14 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.BitmapFactory;
+import android.location.LocationManager;
 import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.MediaStore;
 import android.provider.Settings;
@@ -38,6 +41,7 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 
@@ -47,6 +51,7 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
@@ -68,7 +73,6 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         createAlertNotificationChannel();
-        requestEssentialPermissions();
 
         webView = new WebView(this);
         setContentView(webView);
@@ -190,7 +194,24 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
     }
 
-    private void requestEssentialPermissions() {
+    // ═════════════ ویزارد راه‌اندازی مجوزها ═════════════
+    // به محض اولین ورود، مرحله‌به‌مرحله و پشت‌سرهم (نه همزمان) همهٔ مجوزهای لازم برای «قطع نشدن ردیابی» گرفته می‌شود.
+    // هر بار که برنامه باز شود یا سفر شروع شود، اگر چیزی کم باشد دوباره پرسیده می‌شود تا کامل شود.
+    // نکتهٔ اندروید: در اندروید ۱۱ به بالا «همیشه مجاز» را فقط خود کاربر در صفحهٔ تنظیمات می‌تواند بزند؛ ما مستقیم همان صفحه را باز می‌کنیم.
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private final HashSet<String> postponed = new HashSet<>();   // مراحلی که کاربر در همین اجرا «بعداً» زد
+    private boolean wizardBusy = false;       // یک پنجره یا صفحهٔ سیستم در حال نمایش است
+    private boolean awaitingExternal = false; // کاربر به صفحهٔ تنظیمات/پنجرهٔ سیستم رفته و برمی‌گردد
+    private String externalStep = null;
+    private boolean runtimeAsked = false;
+    private boolean bgAsked = false;
+    private boolean batteryAsked = false;
+
+    private boolean granted(String perm) {
+        return ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private List<String> missingRuntimePermissions() {
         List<String> needed = new ArrayList<>();
         String[] perms = new String[]{
             Manifest.permission.ACCESS_FINE_LOCATION,
@@ -198,29 +219,302 @@ public class MainActivity extends AppCompatActivity {
             Manifest.permission.CAMERA,
             Manifest.permission.RECORD_AUDIO
         };
-        for (String p : perms) {
-            if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
-                needed.add(p);
-            }
+        for (String p : perms) if (!granted(p)) needed.add(p);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !granted(Manifest.permission.POST_NOTIFICATIONS)) {
+            needed.add(Manifest.permission.POST_NOTIFICATIONS);
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                needed.add(Manifest.permission.POST_NOTIFICATIONS);
-            }
-        }
-        if (!needed.isEmpty()) {
-            ActivityCompat.requestPermissions(this, needed.toArray(new String[0]), PERMISSIONS_REQ);
-        }
+        return needed;
+    }
+
+    private boolean backgroundLocationOk() {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION);
+    }
+
+    private boolean batteryOk() {
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-                if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
-                    Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                    i.setData(Uri.parse("package:" + getPackageName()));
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            return pm == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M || pm.isIgnoringBatteryOptimizations(getPackageName());
+        } catch (Exception e) { return true; }
+    }
+
+    private boolean notificationsOk() {
+        try { return NotificationManagerCompat.from(this).areNotificationsEnabled(); } catch (Exception e) { return true; }
+    }
+
+    private boolean gpsOk() {
+        try {
+            LocationManager lm = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+            if (lm == null) return true;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) return lm.isLocationEnabled();
+            return lm.isProviderEnabled(LocationManager.GPS_PROVIDER) || lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+        } catch (Exception e) { return true; }
+    }
+
+    private boolean isOemBrandNeedingGuide() {
+        String man = (Build.MANUFACTURER == null ? "" : Build.MANUFACTURER).toLowerCase(java.util.Locale.ROOT);
+        return man.contains("xiaomi") || man.contains("redmi") || man.contains("poco") || man.contains("huawei") || man.contains("honor")
+            || man.contains("oppo") || man.contains("realme") || man.contains("oneplus") || man.contains("vivo") || man.contains("iqoo")
+            || man.contains("samsung");
+    }
+
+    private boolean oemOk() {
+        return !isOemBrandNeedingGuide() || getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getBoolean("oem_guide_done", false);
+    }
+
+    private boolean stepSatisfied(String key) {
+        switch (key) {
+            case "runtime": return missingRuntimePermissions().isEmpty();
+            case "bg": return backgroundLocationOk();
+            case "battery": return batteryOk();
+            case "notif": return notificationsOk();
+            case "gps": return gpsOk();
+            case "oem": return oemOk();
+            default: return true;
+        }
+    }
+
+    /** وضعیت راه‌اندازی برای صفحهٔ وب (JSON). */
+    public String setupStatusJson() {
+        boolean loc = granted(Manifest.permission.ACCESS_FINE_LOCATION);
+        boolean bg = backgroundLocationOk();
+        boolean bat = batteryOk();
+        boolean nt = notificationsOk() && (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || granted(Manifest.permission.POST_NOTIFICATIONS));
+        boolean gps = gpsOk();
+        boolean oem = oemOk();
+        boolean ok = loc && bg && bat && nt && gps && oem;
+        return "{\"location\":" + loc + ",\"background\":" + bg + ",\"battery\":" + bat + ",\"notifications\":" + nt
+            + ",\"gps\":" + gps + ",\"oem\":" + oem + ",\"ok\":" + ok + "}";
+    }
+
+    private void openAppDetailsSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
+        } catch (Exception ignored) {}
+    }
+
+    private void showStepDialog(final String key, String title, String message, String positive, final Runnable onPositive) {
+        wizardBusy = true;
+        try {
+            new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(message)
+                .setCancelable(false)
+                .setPositiveButton(positive, (d, w) -> {
+                    externalStep = key;
+                    awaitingExternal = true;
+                    try {
+                        onPositive.run();
+                    } catch (Exception e) {
+                        awaitingExternal = false;
+                        wizardBusy = false;
+                        postponed.add(key);
+                        uiHandler.postDelayed(this::runPermissionWizard, 300);
+                    }
+                })
+                .setNegativeButton("بعداً", (d, w) -> {
+                    postponed.add(key);
+                    wizardBusy = false;
+                    uiHandler.postDelayed(this::runPermissionWizard, 300);
+                })
+                .show();
+        } catch (Exception e) {
+            wizardBusy = false;
+        }
+    }
+
+    private void runPermissionWizard() {
+        if (isFinishing() || wizardBusy) return;
+        SharedPreferences sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+
+        // ۱) مجوزهای معمولی: مکان دقیق، دوربین، میکروفون، اعلان
+        List<String> missing = missingRuntimePermissions();
+        if (!missing.isEmpty() && !postponed.contains("runtime")) {
+            boolean deniedForever = false;
+            for (String p : missing) if (sp.getBoolean("denied_forever_" + p, false)) deniedForever = true;
+            if (!runtimeAsked && !deniedForever) {
+                runtimeAsked = true;
+                wizardBusy = true;
+                ActivityCompat.requestPermissions(this, missing.toArray(new String[0]), PERMISSIONS_REQ);
+            } else if (deniedForever) {
+                showStepDialog("runtime", "مجوزهای برنامه کامل نیست",
+                    "برای کار برنامه (ردیابی مسیر، عکس رسید، پیام صوتی و اعلان‌ها) باید همهٔ مجوزها را «مجاز» کنید. در صفحهٔ بعد «مجوزها» را بزنید و موارد خاموش را روشن کنید.",
+                    "باز کردن تنظیمات", this::openAppDetailsSettings);
+            } else {
+                showStepDialog("runtime", "مجوزهای برنامه کامل نیست",
+                    "برای کار برنامه (ردیابی مسیر، عکس رسید، پیام صوتی و اعلان‌ها) همهٔ مجوزها لازم است. لطفاً در پنجرهٔ بعد «مجاز» را بزنید.",
+                    "ادامه", () -> {
+                        List<String> again = missingRuntimePermissions();
+                        if (again.isEmpty()) {
+                            awaitingExternal = false;
+                            wizardBusy = false;
+                            uiHandler.postDelayed(this::runPermissionWizard, 300);
+                            return;
+                        }
+                        wizardBusy = true;
+                        ActivityCompat.requestPermissions(this, again.toArray(new String[0]), PERMISSIONS_REQ);
+                    });
+            }
+            return;
+        }
+
+        // ۲) مکان در پس‌زمینه «همیشه مجاز» (برای ادامهٔ ردیابی با صفحهٔ قفل و بعد از ری‌استارت)
+        if (!backgroundLocationOk() && granted(Manifest.permission.ACCESS_FINE_LOCATION) && !postponed.contains("bg")) {
+            if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q && !bgAsked) {
+                bgAsked = true;
+                wizardBusy = true;
+                ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION}, BG_LOC_PERMISSION_REQ);
+            } else {
+                showStepDialog("bg", "ردیابی بعد از قفل شدن گوشی",
+                    "تا ردیابی وقتی صفحه قفل است یا برنامه بسته شده قطع نشود، باید مجوز مکان روی «همیشه مجاز» باشد.\n\nدر صفحهٔ بعد: «مجوزها» ← «مکان» ← «همیشه مجاز». ردیابی فقط وقتی سفر فعال است انجام می‌شود.",
+                    "باز کردن تنظیمات", this::openAppDetailsSettings);
+            }
+            return;
+        }
+
+        // ۳) اعلان‌ها روی گوشی خاموش باشد
+        if (!notificationsOk() && !postponed.contains("notif")) {
+            showStepDialog("notif", "اعلان‌های برنامه خاموش است",
+                "برای دریافت ماموریت و پیام جدید حتی با صفحهٔ قفل، اعلان‌های برنامه را روشن کنید.",
+                "باز کردن تنظیمات", () -> {
+                    Intent i = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                    i.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
                     startActivity(i);
+                });
+            return;
+        }
+
+        // ۴) سرویس مکان (GPS) گوشی روشن باشد
+        if (!gpsOk() && !postponed.contains("gps")) {
+            showStepDialog("gps", "GPS گوشی خاموش است",
+                "برای ثبت مسیر، مکان (GPS) گوشی را روشن کنید.",
+                "روشن کردن مکان", () -> startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)));
+            return;
+        }
+
+        // ۵) استثنا از بهینه‌سازی باتری: پنجرهٔ تأییدِ یک‌ضرب سیستم
+        if (!batteryOk() && !batteryAsked && !postponed.contains("battery")) {
+            batteryAsked = true;
+            wizardBusy = true;
+            externalStep = "battery";
+            awaitingExternal = true;
+            try {
+                Intent i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                i.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(i);
+            } catch (Exception e) {
+                try {
+                    startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+                } catch (Exception e2) {
+                    awaitingExternal = false;
+                    wizardBusy = false;
+                    postponed.add("battery");
                 }
             }
-        } catch (Exception ignored) {}
+            return;
+        }
+
+        // ۶) شروع خودکار / باتری مخصوص برند گوشی (شیائومی، سامسونگ، اوپو، ویوو، هواوی…)
+        if (!oemOk() && !postponed.contains("oem")) {
+            if (showOemStep()) return;
+        }
+
+        sp.edit().putBoolean("setup_complete", missingRuntimePermissions().isEmpty() && backgroundLocationOk() && batteryOk()).apply();
+    }
+
+    private boolean showOemStep() {
+        final SharedPreferences sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        String man = (Build.MANUFACTURER == null ? "" : Build.MANUFACTURER).toLowerCase(java.util.Locale.ROOT);
+        final List<ComponentName> targets = new ArrayList<>();
+        String tip;
+        if (man.contains("xiaomi") || man.contains("redmi") || man.contains("poco")) {
+            targets.add(new ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"));
+            tip = "«شروع خودکار (Autostart)» را برای سفیر روژین روشن کنید و در بخش باتری گزینهٔ «بدون محدودیت» را انتخاب کنید. سپس برنامه را در لیست برنامه‌های اخیر قفل کنید.";
+        } else if (man.contains("huawei") || man.contains("honor")) {
+            targets.add(new ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"));
+            targets.add(new ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity"));
+            tip = "برای سفیر روژین «مدیریت دستی» را بزنید و هر سه گزینه (راه‌اندازی خودکار، راه‌اندازی ثانویه، اجرا در پس‌زمینه) را روشن کنید.";
+        } else if (man.contains("oppo") || man.contains("realme") || man.contains("oneplus")) {
+            targets.add(new ComponentName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity"));
+            targets.add(new ComponentName("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity"));
+            targets.add(new ComponentName("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity"));
+            tip = "«شروع خودکار / Auto-launch» و «فعالیت در پس‌زمینه» را برای سفیر روژین روشن کنید.";
+        } else if (man.contains("vivo") || man.contains("iqoo")) {
+            targets.add(new ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"));
+            targets.add(new ComponentName("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity"));
+            tip = "سفیر روژین را در «شروع خودکار» و «مصرف باتری در پس‌زمینه» مجاز کنید.";
+        } else if (man.contains("samsung")) {
+            targets.add(new ComponentName("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity"));
+            tip = "از مسیر باتری ← «محدودیت‌های استفاده در پس‌زمینه» ← «برنامه‌های هرگز خواب‌نرو»، سفیر روژین را اضافه کنید.";
+        } else {
+            return false;
+        }
+        wizardBusy = true;
+        try {
+            new AlertDialog.Builder(this)
+                .setTitle("برای قطع نشدن ردیابی")
+                .setMessage("در این مدل گوشی، سیستم ممکن است برنامه را هنگام خاموش بودن صفحه ببندد و مسیر شما ثبت نشود.\n\n" + tip)
+                .setCancelable(false)
+                .setPositiveButton("باز کردن تنظیمات", (d, w) -> {
+                    externalStep = "oem";
+                    awaitingExternal = true;
+                    boolean opened = false;
+                    for (ComponentName cn : targets) {
+                        try {
+                            Intent i = new Intent();
+                            i.setComponent(cn);
+                            startActivity(i);
+                            opened = true;
+                            break;
+                        } catch (Exception ignored) {}
+                    }
+                    if (!opened) openAppDetailsSettings();
+                })
+                .setNeutralButton("انجام دادم", (d, w) -> {
+                    sp.edit().putBoolean("oem_guide_done", true).apply();
+                    wizardBusy = false;
+                    uiHandler.postDelayed(this::runPermissionWizard, 300);
+                })
+                .setNegativeButton("بعداً", (d, w) -> {
+                    postponed.add("oem");
+                    wizardBusy = false;
+                    uiHandler.postDelayed(this::runPermissionWizard, 300);
+                })
+                .show();
+            return true;
+        } catch (Exception e) {
+            wizardBusy = false;
+            return false;
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PERMISSIONS_REQ || requestCode == BG_LOC_PERMISSION_REQ) {
+            SharedPreferences.Editor ed = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit();
+            for (int i = 0; i < permissions.length && i < grantResults.length; i++) {
+                if (grantResults[i] != PackageManager.PERMISSION_GRANTED
+                        && !ActivityCompat.shouldShowRequestPermissionRationale(this, permissions[i])) {
+                    ed.putBoolean("denied_forever_" + permissions[i], true);   // اندروید دیگر پنجره نشان نمی‌دهد؛ باید از تنظیمات
+                }
+            }
+            ed.apply();
+            wizardBusy = false;
+            uiHandler.postDelayed(this::runPermissionWizard, 400);
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (awaitingExternal) {
+            awaitingExternal = false;
+            wizardBusy = false;
+            // اگر کاربر از تنظیمات برگشت و مرحله کامل نشد، در همین اجرا مزاحمش نشویم (اجرای بعدی دوباره می‌پرسد)
+            if (externalStep != null && !stepSatisfied(externalStep)) postponed.add(externalStep);
+            externalStep = null;
+        }
+        uiHandler.postDelayed(this::runPermissionWizard, 500);
     }
 
     private boolean acceptsImages(String[] acceptTypes) {
@@ -330,102 +624,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void onTrackingStartedUi() {
-        if (!requestBackgroundLocationPermissionIfNeeded()) showOemKeepAliveGuideIfNeeded();
-    }
-
-    private void showOemKeepAliveGuideIfNeeded() {
-        try {
-            SharedPreferences sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-            if (sp.getBoolean("oem_guide_done", false)) return;
-            long now = System.currentTimeMillis();
-            if (now - sp.getLong("oem_guide_prompt_at", 0L) < 3L * 24L * 60L * 60L * 1000L) return;
-            String man = (Build.MANUFACTURER == null ? "" : Build.MANUFACTURER).toLowerCase(java.util.Locale.ROOT);
-            final List<ComponentName> targets = new ArrayList<>();
-            String tip;
-            if (man.contains("xiaomi") || man.contains("redmi") || man.contains("poco")) {
-                targets.add(new ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"));
-                tip = "«شروع خودکار (Autostart)» را برای سفیر روژین روشن کنید و در بخش باتری گزینهٔ «بدون محدودیت» را انتخاب کنید. سپس برنامه را در لیست برنامه‌های اخیر قفل کنید.";
-            } else if (man.contains("huawei") || man.contains("honor")) {
-                targets.add(new ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"));
-                targets.add(new ComponentName("com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity"));
-                tip = "برای سفیر روژین «مدیریت دستی» را بزنید و هر سه گزینه (راه‌اندازی خودکار، راه‌اندازی ثانویه، اجرا در پس‌زمینه) را روشن کنید.";
-            } else if (man.contains("oppo") || man.contains("realme") || man.contains("oneplus")) {
-                targets.add(new ComponentName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity"));
-                targets.add(new ComponentName("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity"));
-                targets.add(new ComponentName("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity"));
-                tip = "«شروع خودکار / Auto-launch» و «فعالیت در پس‌زمینه» را برای سفیر روژین روشن کنید.";
-            } else if (man.contains("vivo") || man.contains("iqoo")) {
-                targets.add(new ComponentName("com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"));
-                targets.add(new ComponentName("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity"));
-                tip = "سفیر روژین را در «شروع خودکار» و «مصرف باتری در پس‌زمینه» مجاز کنید.";
-            } else if (man.contains("samsung")) {
-                targets.add(new ComponentName("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity"));
-                tip = "از مسیر باتری ← «محدودیت‌های استفاده در پس‌زمینه» ← «برنامه‌های هرگز خواب‌نرو»، سفیر روژین را اضافه کنید.";
-            } else {
-                return;
-            }
-            sp.edit().putLong("oem_guide_prompt_at", now).apply();
-            new AlertDialog.Builder(this)
-                .setTitle("برای قطع نشدن ردیابی")
-                .setMessage("در این مدل گوشی، سیستم ممکن است برنامه را هنگام خاموش بودن صفحه ببندد و مسیر شما ثبت نشود.\n\n" + tip)
-                .setPositiveButton("باز کردن تنظیمات", (d, w) -> {
-                    boolean opened = false;
-                    for (ComponentName cn : targets) {
-                        try {
-                            Intent i = new Intent();
-                            i.setComponent(cn);
-                            startActivity(i);
-                            opened = true;
-                            break;
-                        } catch (Exception ignored) {}
-                    }
-                    if (!opened) {
-                        try {
-                            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
-                        } catch (Exception ignored) {}
-                    }
-                })
-                .setNeutralButton("انجام دادم", (d, w) -> sp.edit().putBoolean("oem_guide_done", true).apply())
-                .setNegativeButton("بعداً", null)
-                .show();
-        } catch (Exception ignored) {}
-    }
-
-    private boolean requestBackgroundLocationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false;
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-                == PackageManager.PERMISSION_GRANTED) return false;
-
-        SharedPreferences preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        long lastPrompt = preferences.getLong("background_location_prompt_at", 0L);
-        long now = System.currentTimeMillis();
-        if (now - lastPrompt < 24L * 60L * 60L * 1000L) return false;
-        preferences.edit().putLong("background_location_prompt_at", now).apply();
-
-        if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
-            ActivityCompat.requestPermissions(
-                this,
-                new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION},
-                BG_LOC_PERMISSION_REQ
-            );
-            return true;
-        }
-
-        new AlertDialog.Builder(this)
-            .setTitle("اجازهٔ دسترسی دائمی به مکان")
-            .setMessage("برای اینکه ردیابی مسیر پس از قفل‌شدن گوشی و پس از راه‌اندازی مجدد بهتر ادامه پیدا کند، در تنظیمات مجوز مکان را روی «همیشه مجاز» قرار دهید. ردیابی فقط هنگام فعال بودن سفر انجام می‌شود.")
-            .setPositiveButton("باز کردن تنظیمات", (dialog, which) -> {
-                try {
-                    Intent settingsIntent = new Intent(
-                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                        Uri.parse("package:" + getPackageName())
-                    );
-                    startActivity(settingsIntent);
-                } catch (Exception ignored) {}
-            })
-            .setNegativeButton("بعداً", (dialog, which) -> {})
-            .show();
-        return true;
+        // با شروع هر سفر، مراحل ردیابی دوباره بررسی می‌شوند (حتی اگر قبلاً «بعداً» زده باشد).
+        postponed.remove("bg");
+        postponed.remove("battery");
+        postponed.remove("gps");
+        postponed.remove("runtime");
+        batteryAsked = false;
+        bgAsked = false;
+        runtimeAsked = false;
+        runPermissionWizard();
     }
 
     private void createAlertNotificationChannel() {
@@ -578,6 +785,25 @@ public class MainActivity extends AppCompatActivity {
             sp.edit().putBoolean("tripActive", false).apply();
             Intent svc = new Intent(context, SafirLocationService.class);
             context.stopService(svc);
+        }
+
+        @JavascriptInterface
+        public String getSetupStatus() {
+            if (context instanceof MainActivity) return ((MainActivity) context).setupStatusJson();
+            return "{\"ok\":false}";
+        }
+
+        @JavascriptInterface
+        public void runSetup() {
+            if (!(context instanceof MainActivity)) return;
+            final MainActivity activity = (MainActivity) context;
+            activity.runOnUiThread(() -> {
+                activity.postponed.clear();
+                activity.batteryAsked = false;
+                activity.bgAsked = false;
+                activity.runtimeAsked = false;
+                activity.runPermissionWizard();
+            });
         }
 
         @JavascriptInterface
