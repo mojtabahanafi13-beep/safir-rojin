@@ -504,9 +504,19 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** وقتی برنامه روی صفحه است، صفحهٔ وب خودش اعلان را نشان می‌دهد؛ سرویس پس‌زمینه تکراری نشان نمی‌دهد. */
+    public static volatile boolean appInForeground = false;
+
+    @Override
+    protected void onPause() {
+        appInForeground = false;
+        super.onPause();
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
+        appInForeground = true;
         if (awaitingExternal) {
             awaitingExternal = false;
             wizardBusy = false;
